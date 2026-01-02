@@ -1,6 +1,6 @@
 const WebSocket = require('ws');
 
-const port = process.env.PORT || 10000;
+const port = process.env.PORT || 3000;
 const wss = new WebSocket.Server({ port: port });
 
 console.log(`서버가 ${port} 포트에서 시작되었습니다.`);
