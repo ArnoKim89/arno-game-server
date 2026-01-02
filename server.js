@@ -8,9 +8,8 @@ console.log(`서버가 ${port} 포트에서 시작되었습니다.`);
 const rooms = {};
 
 wss.on('connection', (ws, req) => {
-    // 접속자 IP 확인 (실제 유저인지 헬스체크인지 구별)
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-    console.log(`[연결 시도] IP: ${ip}`);
+    console.log(`[연결됨] IP: ${ip}`);
 
     ws.isAlive = true;
     ws.roomID = null;
@@ -18,20 +17,14 @@ wss.on('connection', (ws, req) => {
     ws.on('pong', () => { ws.isAlive = true; });
 
     ws.on('message', (data) => {
-        // [수정] 데이터 유효성 검사 (빈 패킷이면 무시)
-        if (!Buffer.isBuffer(data) || data.length === 0) {
-            console.log('[경고] 빈 패킷 수신됨 (무시함)');
-            return;
-        }
-
-        console.log(`[데이터 수신] 길이: ${data.length}`);
+        // 유효성 검사
+        if (!Buffer.isBuffer(data) || data.length === 0) return;
 
         try {
             const msgId = data.readUInt8(0);
 
             // [200] 방 만들기 / 참가
             if (msgId === 200) {
-                // 문자열 깨끗하게 처리 (널문자 제거)
                 let rawString = data.toString('utf8', 1);
                 const roomCode = rawString.replace(/\0/g, '').trim();
                 
@@ -39,23 +32,27 @@ wss.on('connection', (ws, req) => {
                 
                 if (!rooms[roomCode]) {
                     rooms[roomCode] = new Set();
-                    console.log(`[방 생성] 코드: [${roomCode}]`);
+                    console.log(`[방 생성] 코드: ${roomCode}`);
                 }
                 rooms[roomCode].add(ws);
-                console.log(`[입장] [${roomCode}] 방 인원: ${rooms[roomCode].size}`);
+                console.log(`[입장] 방: ${roomCode} / 현재 인원: ${rooms[roomCode].size}`);
                 return;
             }
 
-            // 브로드캐스팅
+            // [중계] 방이 설정된 경우에만 브로드캐스트
             if (ws.roomID && rooms[ws.roomID]) {
                 rooms[ws.roomID].forEach((client) => {
+                    // 나(보낸 사람)를 제외하고 전송
                     if (client !== ws && client.readyState === WebSocket.OPEN) {
                         client.send(data);
                     }
                 });
+            } else {
+                // 방에 입장하지 않은 상태로 패킷을 보내면 무시됨 (이게 현재 문제의 원인일 수 있음)
+                // console.log(`[무시됨] 방 미입장 상태에서 패킷 수신: ${msgId}`);
             }
         } catch (e) {
-            console.error('[오류] 패킷 처리 중 에러:', e);
+            console.error('[오류]', e);
         }
     });
 
@@ -70,6 +67,7 @@ wss.on('connection', (ws, req) => {
     });
 });
 
+// (Ping/Pong Interval 코드는 기존과 동일하게 유지)
 setInterval(() => {
     wss.clients.forEach((ws) => {
         if (ws.isAlive === false) return ws.terminate();
