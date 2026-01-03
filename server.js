@@ -17,6 +17,7 @@ const wss = new WebSocket.Server({ server });
 console.log(`서버가 ${port} 포트에서 시작되었습니다.`);
 
 const rooms = {};
+const BLOCKED_PACKETS = [12]; 
 
 wss.on('connection', (ws, req) => {
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
