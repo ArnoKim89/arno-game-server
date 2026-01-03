@@ -1,11 +1,27 @@
+const http = require('http');
 const WebSocket = require('ws');
 
 const port = process.env.PORT || 3000;
-const wss = new WebSocket.Server({ port: port });
+
+// [수정 1] HTTP 서버 생성 (Render Health Check용)
+// Render가 포트로 접속했을 때 "나 살아있어"라고 응답해주는 역할입니다.
+const server = http.createServer((req, res) => {
+    if (req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('Game Server is Running...');
+    }
+});
+
+// [수정 2] WebSocket 서버를 HTTP 서버 위에 얹기
+const wss = new WebSocket.Server({ server });
 
 console.log(`서버가 ${port} 포트에서 시작되었습니다.`);
 
 const rooms = {};
+
+// [설정] 차단할 패킷 ID 목록 (여기에 MSG_PLAYER_HIT 번호를 넣으면 서버가 아예 중계를 안 함)
+// 예: GML에서 MSG_PLAYER_HIT가 30번이라면 [30] 이렇게 적으세요.
+const BLOCKED_PACKETS = []; 
 
 wss.on('connection', (ws, req) => {
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
@@ -22,6 +38,11 @@ wss.on('connection', (ws, req) => {
 
         try {
             const msgId = data.readUInt8(0);
+
+            // [추가] 서버 차원에서 특정 패킷 차단 (체력 동기화 문제 원천 봉쇄)
+            if (BLOCKED_PACKETS.includes(msgId)) {
+                return; // 아무것도 안 하고 함수 종료 (중계 안 함)
+            }
 
             // [200] 방 만들기 / 참가
             if (msgId === 200) {
@@ -48,8 +69,7 @@ wss.on('connection', (ws, req) => {
                     }
                 });
             } else {
-                // 방에 입장하지 않은 상태로 패킷을 보내면 무시됨 (이게 현재 문제의 원인일 수 있음)
-                // console.log(`[무시됨] 방 미입장 상태에서 패킷 수신: ${msgId}`);
+                // 방 미입장 상태 패킷 무시
             }
         } catch (e) {
             console.error('[오류]', e);
@@ -67,7 +87,7 @@ wss.on('connection', (ws, req) => {
     });
 });
 
-// (Ping/Pong Interval 코드는 기존과 동일하게 유지)
+// Ping/Pong Interval
 setInterval(() => {
     wss.clients.forEach((ws) => {
         if (ws.isAlive === false) return ws.terminate();
@@ -75,3 +95,8 @@ setInterval(() => {
         ws.ping();
     });
 }, 30000);
+
+// [수정 3] 서버 리스닝 시작
+server.listen(port, () => {
+    console.log(`Listening on port ${port}`);
+});
