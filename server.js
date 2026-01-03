@@ -1,15 +1,45 @@
-const http = require('http'); // Render Health Check용 모듈
+const http = require('http');
+const https = require('https');
 const WebSocket = require('ws');
 
 const port = process.env.PORT || 3000;
 
-// Render가 서버 죽었나 살았나 찔러볼 때 응답해주는 HTTP 서버
 const server = http.createServer((req, res) => {
     if (req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('Game Server is Running...');
     }
 });
+
+const RENDER_URL = process.env.RENDER_EXTERNAL_URL || process.env.RENDER_EXTERNAL_HOSTNAME;
+const HEALTH_CHECK_INTERVAL = 10 * 60 * 1000; // 10분마다 (15분 전에 체크)
+
+if (RENDER_URL) {
+    // HTTP 또는 HTTPS URL인지 확인
+    const baseUrl = RENDER_URL.startsWith('http') ? RENDER_URL : `https://${RENDER_URL}`;
+    const isHttps = baseUrl.startsWith('https');
+    const httpModule = isHttps ? https : http;
+    
+    console.log(`[Health Check] 자동 ping 시작: ${baseUrl} (${HEALTH_CHECK_INTERVAL / 1000}초마다)`);
+    
+    // Health check 함수
+    const performHealthCheck = () => {
+        httpModule.get(baseUrl, (res) => {
+            console.log(`[Health Check] 성공: ${res.statusCode} (${new Date().toLocaleTimeString()})`);
+        }).on('error', (err) => {
+            console.log(`[Health Check] 오류: ${err.message} (${new Date().toLocaleTimeString()})`);
+        });
+    };
+    
+    // 서버 시작 후 즉시 한 번 실행
+    setTimeout(performHealthCheck, 5000); // 서버 시작 후 5초 대기
+    
+    // 주기적으로 health check 실행
+    setInterval(performHealthCheck, HEALTH_CHECK_INTERVAL);
+} else {
+    console.log('[Health Check] RENDER_EXTERNAL_URL 환경 변수가 설정되지 않았습니다.');
+    console.log('[Health Check] Render 대시보드에서 환경 변수를 설정하거나, 외부 서비스(UptimeRobot 등)를 사용하세요.');
+}
 
 // HTTP 서버 위에 웹소켓 올리기
 const wss = new WebSocket.Server({ server });
@@ -35,13 +65,9 @@ wss.on('connection', (ws, req) => {
         try {
             const msgId = data.readUInt8(0);
 
-            // ▼▼▼ [수정 2] 패킷 ID를 읽자마자 차단 목록에 있으면 바로 버림 (중계 X) ▼▼▼
             if (BLOCKED_PACKETS.includes(msgId)) {
                 return; 
-            }
-            // ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 
-            // [200] 방 만들기 / 참가
             if (msgId === 200) {
                 let rawString = data.toString('utf8', 1);
                 const roomCode = rawString.replace(/\0/g, '').trim();
@@ -57,10 +83,8 @@ wss.on('connection', (ws, req) => {
                 return;
             }
 
-            // [중계] 방이 설정된 경우에만 브로드캐스트
             if (ws.roomID && rooms[ws.roomID]) {
                 rooms[ws.roomID].forEach((client) => {
-                    // 나(보낸 사람)를 제외하고 전송
                     if (client !== ws && client.readyState === WebSocket.OPEN) {
                         client.send(data);
                     }
@@ -82,7 +106,6 @@ wss.on('connection', (ws, req) => {
     });
 });
 
-// Ping/Pong Interval
 setInterval(() => {
     wss.clients.forEach((ws) => {
         if (ws.isAlive === false) return ws.terminate();
