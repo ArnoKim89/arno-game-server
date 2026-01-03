@@ -1,10 +1,9 @@
-const http = require('http');
+const http = require('http'); // Render Health Check용 모듈
 const WebSocket = require('ws');
 
 const port = process.env.PORT || 3000;
 
-// [수정 1] HTTP 서버 생성 (Render Health Check용)
-// Render가 포트로 접속했을 때 "나 살아있어"라고 응답해주는 역할입니다.
+// Render가 서버 죽었나 살았나 찔러볼 때 응답해주는 HTTP 서버
 const server = http.createServer((req, res) => {
     if (req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -12,16 +11,16 @@ const server = http.createServer((req, res) => {
     }
 });
 
-// [수정 2] WebSocket 서버를 HTTP 서버 위에 얹기
+// HTTP 서버 위에 웹소켓 올리기
 const wss = new WebSocket.Server({ server });
 
 console.log(`서버가 ${port} 포트에서 시작되었습니다.`);
 
 const rooms = {};
 
-// [설정] 차단할 패킷 ID 목록 (여기에 MSG_PLAYER_HIT 번호를 넣으면 서버가 아예 중계를 안 함)
-// 예: GML에서 MSG_PLAYER_HIT가 30번이라면 [30] 이렇게 적으세요.
-const BLOCKED_PACKETS = []; 
+// ▼▼▼ [수정 1] 여기에 차단할 패킷 번호(12)를 적습니다. ▼▼▼
+const BLOCKED_PACKETS = [12]; 
+// ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 
 wss.on('connection', (ws, req) => {
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
@@ -39,10 +38,11 @@ wss.on('connection', (ws, req) => {
         try {
             const msgId = data.readUInt8(0);
 
-            // [추가] 서버 차원에서 특정 패킷 차단 (체력 동기화 문제 원천 봉쇄)
+            // ▼▼▼ [수정 2] 패킷 ID를 읽자마자 차단 목록에 있으면 바로 버림 (중계 X) ▼▼▼
             if (BLOCKED_PACKETS.includes(msgId)) {
-                return; // 아무것도 안 하고 함수 종료 (중계 안 함)
+                return; 
             }
+            // ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 
             // [200] 방 만들기 / 참가
             if (msgId === 200) {
@@ -68,8 +68,6 @@ wss.on('connection', (ws, req) => {
                         client.send(data);
                     }
                 });
-            } else {
-                // 방 미입장 상태 패킷 무시
             }
         } catch (e) {
             console.error('[오류]', e);
@@ -96,7 +94,7 @@ setInterval(() => {
     });
 }, 30000);
 
-// [수정 3] 서버 리스닝 시작
+// 서버 리스닝 시작
 server.listen(port, () => {
     console.log(`Listening on port ${port}`);
 });
