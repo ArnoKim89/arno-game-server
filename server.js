@@ -92,6 +92,6 @@ setInterval(() => {
 }, 30000);
 
 // 서버 리스닝 시작
-server.listen(port, () => {
+server.listen(port, '0.0.0.0', () => {
     console.log(`Listening on port ${port}`);
 });
