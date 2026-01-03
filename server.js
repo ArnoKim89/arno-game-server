@@ -18,10 +18,6 @@ console.log(`서버가 ${port} 포트에서 시작되었습니다.`);
 
 const rooms = {};
 
-// ▼▼▼ [수정 1] 여기에 차단할 패킷 번호(12)를 적습니다. ▼▼▼
-const BLOCKED_PACKETS = [12]; 
-// ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
-
 wss.on('connection', (ws, req) => {
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
     console.log(`[연결됨] IP: ${ip}`);
