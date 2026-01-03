@@ -67,6 +67,7 @@ wss.on('connection', (ws, req) => {
 
             if (BLOCKED_PACKETS.includes(msgId)) {
                 return; 
+            }
 
             if (msgId === 200) {
                 let rawString = data.toString('utf8', 1);
