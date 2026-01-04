@@ -67,6 +67,11 @@ wss.on('connection', (ws, req) => {
                 let rawString = data.toString('utf8', 1);
                 const roomCode = rawString.replace(/\0/g, '').trim();
                 
+                // 이미 방에 등록된 클라이언트는 다시 등록하지 않음
+                if (ws.roomID === roomCode && rooms[roomCode] && rooms[roomCode].has(ws)) {
+                    return; // 이미 등록됨, 무시
+                }
+                
                 ws.roomID = roomCode;
                 ws.clientIP = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
                 
