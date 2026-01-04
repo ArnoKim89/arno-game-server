@@ -47,13 +47,7 @@ const wss = new WebSocket.Server({ server });
 console.log(`서버가 ${port} 포트에서 시작되었습니다.`);
 
 const rooms = {};
-const BLOCKED_PACKETS = [12]; 
-
-// WebRTC Signaling 메시지 ID
-const MSG_WEBRTC_OFFER = 100;
-const MSG_WEBRTC_ANSWER = 101;
-const MSG_WEBRTC_ICE = 102;
-const MSG_WEBRTC_READY = 103;
+const BLOCKED_PACKETS = [12];
 
 wss.on('connection', (ws, req) => {
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
@@ -96,25 +90,13 @@ wss.on('connection', (ws, req) => {
                 return;
             }
 
-            if (msgId === MSG_WEBRTC_OFFER || msgId === MSG_WEBRTC_ANSWER || msgId === MSG_WEBRTC_ICE || msgId === MSG_WEBRTC_READY) {
-                if (ws.roomID && rooms[ws.roomID]) {
-                    rooms[ws.roomID].forEach((client) => {
-                        if (client !== ws && client.readyState === WebSocket.OPEN) {
-                            client.send(data);
-                        }
-                    });
-                }
-                return;
-            }
-
-            if (msgId === 1 || msgId === 2 || msgId === 65) {
-                if (ws.roomID && rooms[ws.roomID]) {
-                    rooms[ws.roomID].forEach((client) => {
-                        if (client !== ws && client.readyState === WebSocket.OPEN) {
-                            client.send(data);
-                        }
-                    });
-                }
+            // 모든 게임 패킷을 같은 방의 다른 클라이언트들에게 중계
+            if (ws.roomID && rooms[ws.roomID]) {
+                rooms[ws.roomID].forEach((client) => {
+                    if (client !== ws && client.readyState === WebSocket.OPEN) {
+                        client.send(data);
+                    }
+                });
             }
         } catch (e) {
             console.error('[오류]', e);
