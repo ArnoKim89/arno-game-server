@@ -12,17 +12,15 @@ const server = http.createServer((req, res) => {
 });
 
 const RENDER_URL = process.env.RENDER_EXTERNAL_URL || process.env.RENDER_EXTERNAL_HOSTNAME;
-const HEALTH_CHECK_INTERVAL = 10 * 60 * 1000; // 10분마다 (15분 전에 체크)
+const HEALTH_CHECK_INTERVAL = 10 * 60 * 1000;
 
 if (RENDER_URL) {
-    // HTTP 또는 HTTPS URL인지 확인
     const baseUrl = RENDER_URL.startsWith('http') ? RENDER_URL : `https://${RENDER_URL}`;
     const isHttps = baseUrl.startsWith('https');
     const httpModule = isHttps ? https : http;
     
     console.log(`[Health Check] 자동 ping 시작: ${baseUrl} (${HEALTH_CHECK_INTERVAL / 1000}초마다)`);
-    
-    // Health check 함수
+
     const performHealthCheck = () => {
         httpModule.get(baseUrl, (res) => {
             console.log(`[Health Check] 성공: ${res.statusCode} (${new Date().toLocaleTimeString()})`);
@@ -30,18 +28,14 @@ if (RENDER_URL) {
             console.log(`[Health Check] 오류: ${err.message} (${new Date().toLocaleTimeString()})`);
         });
     };
-    
-    // 서버 시작 후 즉시 한 번 실행
-    setTimeout(performHealthCheck, 5000); // 서버 시작 후 5초 대기
-    
-    // 주기적으로 health check 실행
+
+    setTimeout(performHealthCheck, 5000);
     setInterval(performHealthCheck, HEALTH_CHECK_INTERVAL);
 } else {
     console.log('[Health Check] RENDER_EXTERNAL_URL 환경 변수가 설정되지 않았습니다.');
     console.log('[Health Check] Render 대시보드에서 환경 변수를 설정하거나, 외부 서비스(UptimeRobot 등)를 사용하세요.');
 }
 
-// HTTP 서버 위에 웹소켓 올리기
 const wss = new WebSocket.Server({ server });
 
 console.log(`서버가 ${port} 포트에서 시작되었습니다.`);
@@ -60,7 +54,6 @@ wss.on('connection', (ws, req) => {
     ws.on('pong', () => { ws.isAlive = true; });
 
     ws.on('message', (data) => {
-        // 유효성 검사
         if (!Buffer.isBuffer(data) || data.length === 0) return;
 
         try {
@@ -70,33 +63,49 @@ wss.on('connection', (ws, req) => {
                 return; 
             }
 
-            // 방 코드 등록 (200)
             if (msgId === 200) {
                 let rawString = data.toString('utf8', 1);
                 const roomCode = rawString.replace(/\0/g, '').trim();
                 
                 ws.roomID = roomCode;
+                ws.clientIP = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
                 
                 if (!rooms[roomCode]) {
                     rooms[roomCode] = new Set();
-                    ws.isHost = true; // 첫 번째 클라이언트가 호스트
-                    console.log(`[방 생성] 코드: ${roomCode} (호스트)`);
+                    ws.isHost = true;
+                    console.log(`[방 생성] 코드: ${roomCode} (호스트) IP: ${ws.clientIP}`);
                 } else {
                     ws.isHost = false;
-                    console.log(`[입장] 방: ${roomCode} (클라이언트)`);
+                    console.log(`[입장] 방: ${roomCode} (클라이언트) IP: ${ws.clientIP}`);
+
+                    const host = Array.from(rooms[roomCode]).find(client => client.isHost);
+                    if (host) {
+                        const hostIPBuff = Buffer.allocUnsafe(1 + 4 + host.clientIP.length);
+                        hostIPBuff.writeUInt8(201, 0);
+                        hostIPBuff.writeUInt32BE(0, 1);
+                        hostIPBuff.write(host.clientIP, 5);
+                        ws.send(hostIPBuff);
+
+                        const clientIPBuff = Buffer.allocUnsafe(1 + 4 + ws.clientIP.length);
+                        clientIPBuff.writeUInt8(202, 0);
+                        clientIPBuff.writeUInt32BE(0, 1);
+                        clientIPBuff.write(ws.clientIP, 5);
+                        host.send(clientIPBuff);
+                    }
                 }
                 rooms[roomCode].add(ws);
                 console.log(`[현재 인원] 방: ${roomCode} / ${rooms[roomCode].size}명`);
                 return;
             }
 
-            // 모든 게임 패킷을 같은 방의 다른 클라이언트들에게 중계
-            if (ws.roomID && rooms[ws.roomID]) {
-                rooms[ws.roomID].forEach((client) => {
-                    if (client !== ws && client.readyState === WebSocket.OPEN) {
-                        client.send(data);
-                    }
-                });
+            if (msgId === 1 || msgId === 2 || msgId === 65) {
+                if (ws.roomID && rooms[ws.roomID]) {
+                    rooms[ws.roomID].forEach((client) => {
+                        if (client !== ws && client.readyState === WebSocket.OPEN) {
+                            client.send(data);
+                        }
+                    });
+                }
             }
         } catch (e) {
             console.error('[오류]', e);
