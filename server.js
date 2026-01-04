@@ -49,12 +49,19 @@ console.log(`서버가 ${port} 포트에서 시작되었습니다.`);
 const rooms = {};
 const BLOCKED_PACKETS = [12]; 
 
+// WebRTC Signaling 메시지 ID
+const MSG_WEBRTC_OFFER = 100;
+const MSG_WEBRTC_ANSWER = 101;
+const MSG_WEBRTC_ICE = 102;
+const MSG_WEBRTC_READY = 103;
+
 wss.on('connection', (ws, req) => {
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
     console.log(`[연결됨] IP: ${ip}`);
 
     ws.isAlive = true;
     ws.roomID = null;
+    ws.isHost = false;
 
     ws.on('pong', () => { ws.isAlive = true; });
 
@@ -69,6 +76,7 @@ wss.on('connection', (ws, req) => {
                 return; 
             }
 
+            // 방 코드 등록 (200)
             if (msgId === 200) {
                 let rawString = data.toString('utf8', 1);
                 const roomCode = rawString.replace(/\0/g, '').trim();
@@ -77,19 +85,36 @@ wss.on('connection', (ws, req) => {
                 
                 if (!rooms[roomCode]) {
                     rooms[roomCode] = new Set();
-                    console.log(`[방 생성] 코드: ${roomCode}`);
+                    ws.isHost = true; // 첫 번째 클라이언트가 호스트
+                    console.log(`[방 생성] 코드: ${roomCode} (호스트)`);
+                } else {
+                    ws.isHost = false;
+                    console.log(`[입장] 방: ${roomCode} (클라이언트)`);
                 }
                 rooms[roomCode].add(ws);
-                console.log(`[입장] 방: ${roomCode} / 현재 인원: ${rooms[roomCode].size}`);
+                console.log(`[현재 인원] 방: ${roomCode} / ${rooms[roomCode].size}명`);
                 return;
             }
 
-            if (ws.roomID && rooms[ws.roomID]) {
-                rooms[ws.roomID].forEach((client) => {
-                    if (client !== ws && client.readyState === WebSocket.OPEN) {
-                        client.send(data);
-                    }
-                });
+            if (msgId === MSG_WEBRTC_OFFER || msgId === MSG_WEBRTC_ANSWER || msgId === MSG_WEBRTC_ICE || msgId === MSG_WEBRTC_READY) {
+                if (ws.roomID && rooms[ws.roomID]) {
+                    rooms[ws.roomID].forEach((client) => {
+                        if (client !== ws && client.readyState === WebSocket.OPEN) {
+                            client.send(data);
+                        }
+                    });
+                }
+                return;
+            }
+
+            if (msgId === 1 || msgId === 2 || msgId === 65) {
+                if (ws.roomID && rooms[ws.roomID]) {
+                    rooms[ws.roomID].forEach((client) => {
+                        if (client !== ws && client.readyState === WebSocket.OPEN) {
+                            client.send(data);
+                        }
+                    });
+                }
             }
         } catch (e) {
             console.error('[오류]', e);
@@ -102,6 +127,8 @@ wss.on('connection', (ws, req) => {
             if (rooms[ws.roomID].size === 0) {
                 delete rooms[ws.roomID];
                 console.log(`[방 삭제] ${ws.roomID}`);
+            } else {
+                console.log(`[퇴장] 방: ${ws.roomID} / 현재 인원: ${rooms[ws.roomID].size}`);
             }
         }
     });
@@ -115,7 +142,6 @@ setInterval(() => {
     });
 }, 30000);
 
-// 서버 리스닝 시작
 server.listen(port, '0.0.0.0', () => {
     console.log(`Listening on port ${port}`);
 });
