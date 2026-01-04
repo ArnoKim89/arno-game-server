@@ -49,6 +49,7 @@ wss.on('connection', (ws, req) => {
     ws.isAlive = true;
     ws.roomID = null;
     ws.isHost = false;
+    ws.clientIP = ip; // 클라이언트 IP 저장 (호스트 IP 전달용)
 
     ws.on('pong', () => { ws.isAlive = true; });
 
@@ -77,6 +78,29 @@ wss.on('connection', (ws, req) => {
                 } else {
                     ws.isHost = false;
                     console.log(`[입장] 방: ${roomCode} (클라이언트)`);
+                    
+                    // 클라이언트가 방에 입장할 때 호스트의 IP를 MSG_HOST_IP로 전송
+                    // 호스트 찾기
+                    let hostFound = false;
+                    rooms[roomCode].forEach((client) => {
+                        if (client.isHost && client.readyState === WebSocket.OPEN) {
+                            hostFound = true;
+                            // MSG_HOST_IP (201) 전송: [MSG_ID(1)][host_id(4)][host_ip(string)]
+                            const hostIP = client.clientIP || '127.0.0.1';
+                            const buffer = Buffer.allocUnsafe(1 + 4 + hostIP.length + 1);
+                            buffer.writeUInt8(201, 0); // MSG_HOST_IP
+                            buffer.writeUInt32BE(0, 1); // host_id (호스트는 항상 0)
+                            buffer.write(hostIP, 5, 'utf8');
+                            buffer.writeUInt8(0, 5 + hostIP.length); // null terminator
+                            
+                            ws.send(buffer);
+                            console.log(`[호스트 IP 전송] 방: ${roomCode}, 호스트 IP: ${hostIP} -> 클라이언트`);
+                        }
+                    });
+                    
+                    if (!hostFound) {
+                        console.log(`[경고] 방: ${roomCode}에 호스트가 없습니다.`);
+                    }
                 }
                 rooms[roomCode].add(ws);
                 console.log(`[현재 인원] 방: ${roomCode} / ${rooms[roomCode].size}명`);
