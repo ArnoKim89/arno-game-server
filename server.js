@@ -61,8 +61,7 @@ wss.on('connection', (ws, req) => {
         try {
             const msgId = data.readUInt8(0);
 
-            // 방 코드 등록 (200) 또는 Signaling 메시지만 처리
-            // 게임 패킷은 P2P UDP로 직접 전송되므로 중계하지 않음
+            // 방 코드 등록 (200)
             if (msgId === 200) {
                 let rawString = data.toString('utf8', 1);
                 const roomCode = rawString.replace(/\0/g, '').trim();
@@ -81,42 +80,19 @@ wss.on('connection', (ws, req) => {
                 } else {
                     ws.isHost = false;
                     console.log(`[입장] 방: ${roomCode} (클라이언트) IP: ${ws.clientIP}`);
-                    
-                    // 클라이언트에게 호스트 IP 전달 (P2P 직접 연결용)
-                    const host = Array.from(rooms[roomCode]).find(client => client.isHost);
-                    if (host) {
-                        // 클라이언트에게 호스트 IP 전달
-                        const hostIPBuff = Buffer.allocUnsafe(1 + 4 + host.clientIP.length);
-                        hostIPBuff.writeUInt8(201, 0); // MSG_HOST_IP
-                        hostIPBuff.writeUInt32BE(0, 1); // 호스트 ID (플레이스홀더)
-                        hostIPBuff.write(host.clientIP, 5);
-                        ws.send(hostIPBuff);
-                        console.log(`[IP 전달] 호스트 IP ${host.clientIP}를 클라이언트에게 전송`);
-                        
-                        // 호스트에게 클라이언트 IP 전달 (UDP Hole Punching용)
-                        const clientIPBuff = Buffer.allocUnsafe(1 + 4 + ws.clientIP.length);
-                        clientIPBuff.writeUInt8(202, 0); // MSG_CLIENT_IP
-                        clientIPBuff.writeUInt32BE(0, 1); // 클라이언트 ID (플레이스홀더)
-                        clientIPBuff.write(ws.clientIP, 5);
-                        host.send(clientIPBuff);
-                        console.log(`[IP 전달] 클라이언트 IP ${ws.clientIP}를 호스트에게 전송 (UDP Hole Punching)`);
-                    }
                 }
                 rooms[roomCode].add(ws);
                 console.log(`[현재 인원] 방: ${roomCode} / ${rooms[roomCode].size}명`);
                 return;
             }
 
-            // Signaling 메시지만 중계 (MSG_JOIN, MSG_HANDSHAKE, MSG_REJECT)
-            // 게임 패킷은 P2P 직접 연결로 전송되므로 중계하지 않음
-            if (msgId === 1 || msgId === 2 || msgId === 65) { // MSG_JOIN, MSG_HANDSHAKE, MSG_REJECT
-                if (ws.roomID && rooms[ws.roomID]) {
-                    rooms[ws.roomID].forEach((client) => {
-                        if (client !== ws && client.readyState === WebSocket.OPEN) {
-                            client.send(data);
-                        }
-                    });
-                }
+            // 모든 패킷 중계 (TCP로 복귀)
+            if (ws.roomID && rooms[ws.roomID]) {
+                rooms[ws.roomID].forEach((client) => {
+                    if (client !== ws && client.readyState === WebSocket.OPEN) {
+                        client.send(data);
+                    }
+                });
             }
         } catch (e) {
             console.error('[오류]', e);
