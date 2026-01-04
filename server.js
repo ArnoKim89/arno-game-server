@@ -76,29 +76,21 @@ wss.on('connection', (ws, req) => {
                 if (!rooms[roomCode]) {
                     rooms[roomCode] = new Set();
                     ws.isHost = true;
-                    console.log(`[방 생성] 코드: ${roomCode} (호스트) IP: ${ws.clientIP}`);
+                    console.log(`[방 생성] 코드: ${roomCode} (호스트) 공인 IP: ${ws.clientIP}`);
                 } else {
                     ws.isHost = false;
                     console.log(`[입장] 방: ${roomCode} (클라이언트) IP: ${ws.clientIP}`);
                     
-                    // 클라이언트에게 호스트 IP 전달 (P2P 직접 연결용)
+                    // 클라이언트에게 호스트 공인 IP 전달 (IP 다이렉트 방식)
                     const host = Array.from(rooms[roomCode]).find(client => client.isHost);
                     if (host) {
-                        // 클라이언트에게 호스트 IP 전달
+                        // 클라이언트에게 호스트 공인 IP 전달
                         const hostIPBuff = Buffer.allocUnsafe(1 + 4 + host.clientIP.length);
                         hostIPBuff.writeUInt8(201, 0); // MSG_HOST_IP
                         hostIPBuff.writeUInt32BE(0, 1); // 호스트 ID (플레이스홀더)
                         hostIPBuff.write(host.clientIP, 5);
                         ws.send(hostIPBuff);
-                        console.log(`[IP 전달] 호스트 IP ${host.clientIP}를 클라이언트에게 전송`);
-                        
-                        // 호스트에게 클라이언트 IP 전달 (UDP Hole Punching용)
-                        const clientIPBuff = Buffer.allocUnsafe(1 + 4 + ws.clientIP.length);
-                        clientIPBuff.writeUInt8(202, 0); // MSG_CLIENT_IP
-                        clientIPBuff.writeUInt32BE(0, 1); // 클라이언트 ID (플레이스홀더)
-                        clientIPBuff.write(ws.clientIP, 5);
-                        host.send(clientIPBuff);
-                        console.log(`[IP 전달] 클라이언트 IP ${ws.clientIP}를 호스트에게 전송 (UDP Hole Punching)`);
+                        console.log(`[IP 전달] 호스트 공인 IP ${host.clientIP}를 클라이언트에게 전송 (IP 다이렉트 방식)`);
                     }
                 }
                 rooms[roomCode].add(ws);
@@ -107,7 +99,7 @@ wss.on('connection', (ws, req) => {
             }
 
             // Signaling 메시지만 중계 (MSG_JOIN, MSG_HANDSHAKE, MSG_REJECT)
-            // 게임 패킷은 P2P 직접 UDP로 전송되므로 중계하지 않음
+            // 게임 패킷은 직접 TCP로 전송되므로 중계하지 않음
             if (msgId === 1 || msgId === 2 || msgId === 65) { // MSG_JOIN, MSG_HANDSHAKE, MSG_REJECT
                 if (ws.roomID && rooms[ws.roomID]) {
                     rooms[ws.roomID].forEach((client) => {
