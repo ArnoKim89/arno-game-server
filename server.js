@@ -86,12 +86,21 @@ wss.on('connection', (ws, req) => {
                     // 클라이언트에게 호스트 IP 전달 (P2P 직접 연결용)
                     const host = Array.from(rooms[roomCode]).find(client => client.isHost);
                     if (host) {
+                        // 클라이언트에게 호스트 IP 전달
                         const hostIPBuff = Buffer.allocUnsafe(1 + 4 + host.clientIP.length);
                         hostIPBuff.writeUInt8(201, 0); // MSG_HOST_IP
                         hostIPBuff.writeUInt32BE(0, 1); // 호스트 ID (플레이스홀더)
                         hostIPBuff.write(host.clientIP, 5);
                         ws.send(hostIPBuff);
                         console.log(`[IP 전달] 호스트 IP ${host.clientIP}를 클라이언트에게 전송`);
+                        
+                        // 호스트에게 클라이언트 IP 전달 (TCP Hole Punching용)
+                        const clientIPBuff = Buffer.allocUnsafe(1 + 4 + ws.clientIP.length);
+                        clientIPBuff.writeUInt8(202, 0); // MSG_CLIENT_IP
+                        clientIPBuff.writeUInt32BE(0, 1); // 클라이언트 ID (플레이스홀더)
+                        clientIPBuff.write(ws.clientIP, 5);
+                        host.send(clientIPBuff);
+                        console.log(`[IP 전달] 클라이언트 IP ${ws.clientIP}를 호스트에게 전송 (TCP Hole Punching)`);
                     }
                 }
                 rooms[roomCode].add(ws);
