@@ -40,9 +40,7 @@ const wss = new WebSocket.Server({ server });
 
 console.log(`서버가 ${port} 포트에서 시작되었습니다.`);
 
-const rooms = {};
-// 게임 패킷은 P2P UDP로 직접 전송되므로 중계하지 않음
-// Signaling 메시지만 중계: MSG_JOIN(1), MSG_HANDSHAKE(2), MSG_REJECT(65), MSG_HOST_IP(201), MSG_CLIENT_IP(202)
+const rooms = {}; // roomCode -> Set of WebSocket clients
 
 wss.on('connection', (ws, req) => {
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
@@ -51,7 +49,6 @@ wss.on('connection', (ws, req) => {
     ws.isAlive = true;
     ws.roomID = null;
     ws.isHost = false;
-    ws.clientIP = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
 
     ws.on('pong', () => { ws.isAlive = true; });
 
@@ -76,31 +73,24 @@ wss.on('connection', (ws, req) => {
                 if (!rooms[roomCode]) {
                     rooms[roomCode] = new Set();
                     ws.isHost = true;
-                    console.log(`[방 생성] 코드: ${roomCode} (호스트) 공인 IP: ${ws.clientIP}`);
+                    console.log(`[방 생성] 코드: ${roomCode} (호스트)`);
                 } else {
                     ws.isHost = false;
-                    console.log(`[입장] 방: ${roomCode} (클라이언트) IP: ${ws.clientIP}`);
-                    
-                    // 클라이언트에게 호스트 공인 IP 전달 (IP 다이렉트 방식)
-                    const host = Array.from(rooms[roomCode]).find(client => client.isHost);
-                    if (host) {
-                        // 클라이언트에게 호스트 공인 IP 전달
-                        const hostIPBuff = Buffer.allocUnsafe(1 + 4 + host.clientIP.length);
-                        hostIPBuff.writeUInt8(201, 0); // MSG_HOST_IP
-                        hostIPBuff.writeUInt32BE(0, 1); // 호스트 ID (플레이스홀더)
-                        hostIPBuff.write(host.clientIP, 5);
-                        ws.send(hostIPBuff);
-                        console.log(`[IP 전달] 호스트 공인 IP ${host.clientIP}를 클라이언트에게 전송 (IP 다이렉트 방식)`);
-                    }
+                    console.log(`[입장] 방: ${roomCode} (클라이언트)`);
                 }
                 rooms[roomCode].add(ws);
                 console.log(`[현재 인원] 방: ${roomCode} / ${rooms[roomCode].size}명`);
                 return;
             }
 
-            // Render 서버는 호스트 IP 전달 역할만 수행
-            // 모든 실제 통신은 P2P 직접 TCP로 진행되므로 중계하지 않음
-            // (MSG_JOIN, MSG_HANDSHAKE, MSG_REJECT도 직접 TCP로 전송됨)
+            // 모든 패킷을 방의 다른 클라이언트들에게 중계
+            if (ws.roomID && rooms[ws.roomID]) {
+                rooms[ws.roomID].forEach((client) => {
+                    if (client !== ws && client.readyState === WebSocket.OPEN) {
+                        client.send(data);
+                    }
+                });
+            }
         } catch (e) {
             console.error('[오류]', e);
         }
