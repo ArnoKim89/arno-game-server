@@ -98,17 +98,9 @@ wss.on('connection', (ws, req) => {
                 return;
             }
 
-            // Signaling 메시지만 중계 (MSG_JOIN, MSG_HANDSHAKE, MSG_REJECT)
-            // 게임 패킷은 직접 TCP로 전송되므로 중계하지 않음
-            if (msgId === 1 || msgId === 2 || msgId === 65) { // MSG_JOIN, MSG_HANDSHAKE, MSG_REJECT
-                if (ws.roomID && rooms[ws.roomID]) {
-                    rooms[ws.roomID].forEach((client) => {
-                        if (client !== ws && client.readyState === WebSocket.OPEN) {
-                            client.send(data);
-                        }
-                    });
-                }
-            }
+            // Render 서버는 호스트 IP 전달 역할만 수행
+            // 모든 실제 통신은 P2P 직접 TCP로 진행되므로 중계하지 않음
+            // (MSG_JOIN, MSG_HANDSHAKE, MSG_REJECT도 직접 TCP로 전송됨)
         } catch (e) {
             console.error('[오류]', e);
         }
