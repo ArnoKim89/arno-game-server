@@ -41,7 +41,8 @@ const wss = new WebSocket.Server({ server });
 console.log(`서버가 ${port} 포트에서 시작되었습니다.`);
 
 const rooms = {};
-const BLOCKED_PACKETS = [12];
+// 게임 패킷은 P2P UDP로 직접 전송되므로 중계하지 않음
+// Signaling 메시지만 중계: MSG_JOIN(1), MSG_HANDSHAKE(2), MSG_REJECT(65), MSG_HOST_IP(201), MSG_CLIENT_IP(202)
 
 wss.on('connection', (ws, req) => {
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
@@ -60,10 +61,8 @@ wss.on('connection', (ws, req) => {
         try {
             const msgId = data.readUInt8(0);
 
-            if (BLOCKED_PACKETS.includes(msgId)) {
-                return; 
-            }
-
+            // 방 코드 등록 (200) 또는 Signaling 메시지만 처리
+            // 게임 패킷은 P2P UDP로 직접 전송되므로 중계하지 않음
             if (msgId === 200) {
                 let rawString = data.toString('utf8', 1);
                 const roomCode = rawString.replace(/\0/g, '').trim();
@@ -94,13 +93,13 @@ wss.on('connection', (ws, req) => {
                         ws.send(hostIPBuff);
                         console.log(`[IP 전달] 호스트 IP ${host.clientIP}를 클라이언트에게 전송`);
                         
-                        // 호스트에게 클라이언트 IP 전달 (TCP Hole Punching용)
+                        // 호스트에게 클라이언트 IP 전달 (UDP Hole Punching용)
                         const clientIPBuff = Buffer.allocUnsafe(1 + 4 + ws.clientIP.length);
                         clientIPBuff.writeUInt8(202, 0); // MSG_CLIENT_IP
                         clientIPBuff.writeUInt32BE(0, 1); // 클라이언트 ID (플레이스홀더)
                         clientIPBuff.write(ws.clientIP, 5);
                         host.send(clientIPBuff);
-                        console.log(`[IP 전달] 클라이언트 IP ${ws.clientIP}를 호스트에게 전송 (TCP Hole Punching)`);
+                        console.log(`[IP 전달] 클라이언트 IP ${ws.clientIP}를 호스트에게 전송 (UDP Hole Punching)`);
                     }
                 }
                 rooms[roomCode].add(ws);
