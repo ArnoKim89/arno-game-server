@@ -46,7 +46,7 @@ if (RENDER_URL) {
 const wss = new WebSocket.Server({ server });
 console.log(`Signaling server started on port ${PORT}`);
 
-// Room model: star topology (host <-> peers). No TURN here.
+// Room model: star topology (host <-> peers). No TURN here (STUN-only clients are expected).
 // roomCode -> { createdAt, hostWs, peers: Map(peerId, ws) }
 const rooms = new Map();
 
@@ -246,6 +246,7 @@ function handleSignal(ws, msg) {
 }
 
 // Legacy support: old binary protocol (msgId=200 room register; then raw relay)
+// NOTE: This legacy path is kept only for backwards compatibility with old builds.
 function handleLegacyBinary(ws, data) {
   if (!Buffer.isBuffer(data) || data.length === 0) return false;
   const msgId = data.readUInt8(0);
