@@ -4,10 +4,96 @@ const WebSocket = require('ws');
 
 const port = process.env.PORT || 3000;
 
+// ------------------------------------------------------------
+// Simple HTTP signaling API (room code -> host IP/port)
+// ------------------------------------------------------------
+function _getClientIp(req) {
+    const xf = req.headers['x-forwarded-for'];
+    if (xf) return String(xf).split(',')[0].trim();
+    return req.socket?.remoteAddress || '127.0.0.1';
+}
+function _sendJson(res, statusCode, obj) {
+    const body = JSON.stringify(obj);
+    res.writeHead(statusCode, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'Access-Control-Allow-Origin': '*'
+    });
+    res.end(body);
+}
+function _makeRoomCode() {
+    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no I/O/0/1
+    let out = '';
+    for (let i = 0; i < 6; i++) out += alphabet[Math.floor(Math.random() * alphabet.length)];
+    return out;
+}
+function _cleanRooms(rooms) {
+    const now = Date.now();
+    const ttlMs = 6 * 60 * 60 * 1000; // 6h
+    for (const [code, r] of Object.entries(rooms)) {
+        if (!r || !r.createdAt || (now - r.createdAt) > ttlMs) delete rooms[code];
+    }
+}
+
 const server = http.createServer((req, res) => {
-    if (req.method === 'GET') {
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        res.end('Game Server is Running...');
+    try {
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        const path = url.pathname || '/';
+
+        // CORS preflight
+        if (req.method === 'OPTIONS') {
+            res.writeHead(204, {
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+                'Access-Control-Allow-Headers': 'Content-Type'
+            });
+            return res.end();
+        }
+
+        // Health check
+        if (req.method === 'GET' && (path === '/' || path === '/health')) {
+            res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+            return res.end('FOURVIVE Signaling Server is Running...');
+        }
+
+        // API: create room (host calls this after opening TCP server)
+        // GET /api/room/create?port=6510
+        if (req.method === 'GET' && path === '/api/room/create') {
+            _cleanRooms(rooms_http);
+            const portStr = url.searchParams.get('port') || '';
+            const portNum = Number(portStr);
+            if (!Number.isFinite(portNum) || portNum <= 0 || portNum > 65535) {
+                return _sendJson(res, 400, { ok: false, error: 'invalid_port' });
+            }
+
+            let code = _makeRoomCode();
+            let tries = 0;
+            while (rooms_http[code] && tries < 10) { code = _makeRoomCode(); tries++; }
+
+            const hostIp = _getClientIp(req);
+            rooms_http[code] = { hostIp, port: portNum, createdAt: Date.now() };
+            return _sendJson(res, 200, { ok: true, code, hostIp, port: portNum });
+        }
+
+        // API: join room (client calls this with room code)
+        // GET /api/room/join?code=ABC123
+        if (req.method === 'GET' && path === '/api/room/join') {
+            _cleanRooms(rooms_http);
+            const codeRaw = (url.searchParams.get('code') || '').toUpperCase().trim();
+            if (!codeRaw) return _sendJson(res, 400, { ok: false, error: 'missing_code' });
+
+            const room = rooms_http[codeRaw];
+            if (!room) return _sendJson(res, 404, { ok: false, error: 'room_not_found' });
+
+            return _sendJson(res, 200, { ok: true, code: codeRaw, hostIp: room.hostIp, port: room.port });
+        }
+
+        // Fallback
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Not Found');
+    } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Server Error');
     }
 });
 
@@ -39,6 +125,9 @@ if (RENDER_URL) {
 const wss = new WebSocket.Server({ server });
 
 console.log(`서버가 ${port} 포트에서 시작되었습니다.`);
+
+// Rooms for HTTP signaling API
+const rooms_http = {}; // roomCode -> { hostIp, port, createdAt }
 
 const rooms = {}; // roomCode -> Set of WebSocket clients
 
