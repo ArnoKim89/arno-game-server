@@ -25,6 +25,10 @@ function json(res, statusCode, obj) {
     res.writeHead(statusCode, {
         'Content-Type': 'application/json; charset=utf-8',
         'Cache-Control': 'no-store',
+        // HTML5(브라우저)에서 http_request/fetch가 CORS에 막히지 않도록 허용
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
     });
     res.end(body);
 }
@@ -91,7 +95,10 @@ const server = http.createServer(async (req, res) => {
 
         // Health check
         if (req.method === 'GET' && url.pathname === '/') {
-            res.writeHead(200, { 'Content-Type': 'text/plain' });
+            res.writeHead(200, {
+                'Content-Type': 'text/plain',
+                'Access-Control-Allow-Origin': '*',
+            });
             res.end('Game Server is Running...');
             return;
         }
@@ -216,7 +223,10 @@ const server = http.createServer(async (req, res) => {
         }
 
         // Fallback
-        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.writeHead(404, {
+            'Content-Type': 'text/plain',
+            'Access-Control-Allow-Origin': '*',
+        });
         res.end('Not Found');
     } catch (e) {
         console.error('[HTTP Error]', e);
