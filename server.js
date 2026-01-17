@@ -1,99 +1,215 @@
 const http = require('http');
 const https = require('https');
 const WebSocket = require('ws');
+const { URL } = require('url');
 
 const port = process.env.PORT || 3000;
 
-// ------------------------------------------------------------
-// Simple HTTP signaling API (room code -> host IP/port)
-// ------------------------------------------------------------
-function _getClientIp(req) {
+function getClientIp(req) {
     const xf = req.headers['x-forwarded-for'];
-    if (xf) return String(xf).split(',')[0].trim();
-    return req.socket?.remoteAddress || '127.0.0.1';
+    if (typeof xf === 'string' && xf.length > 0) return xf.split(',')[0].trim();
+    return req.socket?.remoteAddress || '0.0.0.0';
 }
-function _sendJson(res, statusCode, obj) {
+
+function readBody(req) {
+    return new Promise((resolve, reject) => {
+        let data = '';
+        req.on('data', (chunk) => { data += chunk.toString('utf8'); });
+        req.on('end', () => resolve(data));
+        req.on('error', reject);
+    });
+}
+
+function json(res, statusCode, obj) {
     const body = JSON.stringify(obj);
     res.writeHead(statusCode, {
         'Content-Type': 'application/json; charset=utf-8',
         'Cache-Control': 'no-store',
-        'Access-Control-Allow-Origin': '*'
     });
     res.end(body);
 }
-function _makeRoomCode() {
-    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no I/O/0/1
-    let out = '';
-    for (let i = 0; i < 6; i++) out += alphabet[Math.floor(Math.random() * alphabet.length)];
-    return out;
-}
-function _cleanRooms(rooms) {
+
+// 방코드 매치메이커(HTTP): roomCode -> { hostIp, port, hostKey, expiresAt }
+const httpRooms = new Map();
+const ROOM_TTL_MS = 30 * 60 * 1000;
+
+// WebRTC 시그널링(HTTP long-poll):
+// - Render는 SDP/ICE를 "전달"만 하고 실제 트래픽은 P2P(DataChannel) 직결
+const rtcRooms = new Map(); // roomCode -> { events: [], seq: 0, expiresAt }
+const RTC_TTL_MS = 30 * 60 * 1000;
+
+function getRtcRoom(roomCode) {
     const now = Date.now();
-    const ttlMs = 6 * 60 * 60 * 1000; // 6h
-    for (const [code, r] of Object.entries(rooms)) {
-        if (!r || !r.createdAt || (now - r.createdAt) > ttlMs) delete rooms[code];
+    let r = rtcRooms.get(roomCode);
+    if (!r || r.expiresAt <= now) {
+        r = { events: [], seq: 0, expiresAt: now + RTC_TTL_MS };
+        rtcRooms.set(roomCode, r);
+    } else {
+        r.expiresAt = now + RTC_TTL_MS;
+    }
+    return r;
+}
+
+function pushRtcEvent(roomCode, ev) {
+    const r = getRtcRoom(roomCode);
+    r.seq += 1;
+    r.events.push({ seq: r.seq, t: Date.now(), ...ev });
+    if (r.events.length > 200) r.events.splice(0, r.events.length - 200);
+    return r.seq;
+}
+
+function cleanupRtcRooms() {
+    const now = Date.now();
+    for (const [code, r] of rtcRooms.entries()) {
+        if (!r || r.expiresAt <= now) rtcRooms.delete(code);
     }
 }
+setInterval(cleanupRtcRooms, 30 * 1000).unref?.();
 
-const server = http.createServer((req, res) => {
+function normalizeRoomCode(code) {
+    if (typeof code !== 'string') return '';
+    return code.replace(/\0/g, '').trim().toUpperCase();
+}
+
+function isValidRoomCode(code) {
+    // 대문자/숫자 4~10자
+    return /^[A-Z0-9]{4,10}$/.test(code);
+}
+
+function cleanupRooms() {
+    const now = Date.now();
+    for (const [code, room] of httpRooms.entries()) {
+        if (!room || room.expiresAt <= now) httpRooms.delete(code);
+    }
+}
+setInterval(cleanupRooms, 30 * 1000).unref?.();
+
+const server = http.createServer(async (req, res) => {
     try {
-        const url = new URL(req.url, `http://${req.headers.host}`);
-        const path = url.pathname || '/';
+        const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
 
-        // CORS preflight
+        // Health check
+        if (req.method === 'GET' && url.pathname === '/') {
+            res.writeHead(200, { 'Content-Type': 'text/plain' });
+            res.end('Game Server is Running...');
+            return;
+        }
+
+        // CORS preflight (선택)
         if (req.method === 'OPTIONS') {
             res.writeHead(204, {
                 'Access-Control-Allow-Origin': '*',
                 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-                'Access-Control-Allow-Headers': 'Content-Type'
+                'Access-Control-Allow-Headers': 'Content-Type',
+                'Access-Control-Max-Age': '86400',
             });
-            return res.end();
+            res.end();
+            return;
         }
 
-        // Health check
-        if (req.method === 'GET' && (path === '/' || path === '/health')) {
-            res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-            return res.end('FOURVIVE Signaling Server is Running...');
-        }
+        // -----------------------------------------------------------------
+        // POST /room/create  { roomCode, port?, hostKey? } -> { ok, roomCode, hostIp, port, hostKey, expiresInMs }
+        // POST /room/join    { roomCode }                -> { ok, roomCode, hostIp, port }
+        // -----------------------------------------------------------------
+        if (req.method === 'POST' && (url.pathname === '/room/create' || url.pathname === '/room/join')) {
+            const ip = getClientIp(req);
+            const raw = await readBody(req);
+            let body = {};
+            try { body = raw ? JSON.parse(raw) : {}; } catch { body = {}; }
 
-        // API: create room (host calls this after opening TCP server)
-        // GET /api/room/create?port=6510
-        if (req.method === 'GET' && path === '/api/room/create') {
-            _cleanRooms(rooms_http);
-            const portStr = url.searchParams.get('port') || '';
-            const portNum = Number(portStr);
-            if (!Number.isFinite(portNum) || portNum <= 0 || portNum > 65535) {
-                return _sendJson(res, 400, { ok: false, error: 'invalid_port' });
+            const roomCode = normalizeRoomCode(body.roomCode);
+            if (!isValidRoomCode(roomCode)) {
+                json(res, 400, { ok: false, error: 'invalid_room_code' });
+                return;
             }
 
-            let code = _makeRoomCode();
-            let tries = 0;
-            while (rooms_http[code] && tries < 10) { code = _makeRoomCode(); tries++; }
+            if (url.pathname === '/room/create') {
+                const portNum = Number(body.port);
+                const p = Number.isFinite(portNum) && portNum > 0 && portNum < 65536 ? portNum : 6510;
 
-            const hostIp = _getClientIp(req);
-            rooms_http[code] = { hostIp, port: portNum, createdAt: Date.now() };
-            return _sendJson(res, 200, { ok: true, code, hostIp, port: portNum });
+                // 기존 방이 있으면 hostKey로만 갱신 허용(하이재킹 방지)
+                const existing = httpRooms.get(roomCode);
+                if (existing) {
+                    const providedKey = typeof body.hostKey === 'string' ? body.hostKey : '';
+                    if (!providedKey || providedKey !== existing.hostKey) {
+                        json(res, 409, { ok: false, error: 'room_code_taken' });
+                        return;
+                    }
+                }
+
+                const hostKey = existing?.hostKey || Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+                const expiresAt = Date.now() + ROOM_TTL_MS;
+                httpRooms.set(roomCode, { hostIp: ip, port: p, hostKey, expiresAt });
+
+                json(res, 200, { ok: true, roomCode, hostIp: ip, port: p, hostKey, expiresInMs: ROOM_TTL_MS });
+                return;
+            }
+
+            // /room/join
+            const room = httpRooms.get(roomCode);
+            if (!room || room.expiresAt <= Date.now()) {
+                httpRooms.delete(roomCode);
+                json(res, 404, { ok: false, error: 'room_not_found' });
+                return;
+            }
+
+            json(res, 200, { ok: true, roomCode, hostIp: room.hostIp, port: room.port });
+            return;
         }
 
-        // API: join room (client calls this with room code)
-        // GET /api/room/join?code=ABC123
-        if (req.method === 'GET' && path === '/api/room/join') {
-            _cleanRooms(rooms_http);
-            const codeRaw = (url.searchParams.get('code') || '').toUpperCase().trim();
-            if (!codeRaw) return _sendJson(res, 400, { ok: false, error: 'missing_code' });
+        // -----------------------------------------------------------------
+        // WebRTC 시그널링
+        // POST /rtc/push { roomCode, type, from, to?, data } -> { ok, seq }
+        // GET  /rtc/poll?roomCode=XXXX&since=0&to=host|client -> { ok, now, events:[...] }
+        // type: "offer" | "answer" | "ice"
+        // data: { sdp } or { candidate, sdpMid, sdpMLineIndex }
+        // -----------------------------------------------------------------
+        if (req.method === 'POST' && url.pathname === '/rtc/push') {
+            const ip = getClientIp(req);
+            const raw = await readBody(req);
+            let body = {};
+            try { body = raw ? JSON.parse(raw) : {}; } catch { body = {}; }
 
-            const room = rooms_http[codeRaw];
-            if (!room) return _sendJson(res, 404, { ok: false, error: 'room_not_found' });
+            const roomCode = normalizeRoomCode(body.roomCode);
+            if (!isValidRoomCode(roomCode)) {
+                json(res, 400, { ok: false, error: 'invalid_room_code' });
+                return;
+            }
+            const type = typeof body.type === 'string' ? body.type : '';
+            if (!['offer', 'answer', 'ice'].includes(type)) {
+                json(res, 400, { ok: false, error: 'invalid_type' });
+                return;
+            }
+            const from = typeof body.from === 'string' ? body.from : 'unknown';
+            const to = typeof body.to === 'string' ? body.to : '';
+            const data = typeof body.data === 'object' && body.data ? body.data : {};
 
-            return _sendJson(res, 200, { ok: true, code: codeRaw, hostIp: room.hostIp, port: room.port });
+            const seq = pushRtcEvent(roomCode, { kind: 'rtc', type, from, to, ip, data });
+            json(res, 200, { ok: true, seq });
+            return;
+        }
+
+        if (req.method === 'GET' && url.pathname === '/rtc/poll') {
+            const roomCode = normalizeRoomCode(url.searchParams.get('roomCode') || '');
+            if (!isValidRoomCode(roomCode)) {
+                json(res, 400, { ok: false, error: 'invalid_room_code' });
+                return;
+            }
+            const since = Number(url.searchParams.get('since') || '0') || 0;
+            const to = (url.searchParams.get('to') || '').toString();
+
+            const r = getRtcRoom(roomCode);
+            const events = r.events.filter((e) => e.seq > since && (!to || !e.to || e.to === to));
+            json(res, 200, { ok: true, now: r.seq, events });
+            return;
         }
 
         // Fallback
-        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
         res.end('Not Found');
     } catch (e) {
-        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('Server Error');
+        console.error('[HTTP Error]', e);
+        try { json(res, 500, { ok: false, error: 'server_error' }); } catch {}
     }
 });
 
@@ -125,9 +241,6 @@ if (RENDER_URL) {
 const wss = new WebSocket.Server({ server });
 
 console.log(`서버가 ${port} 포트에서 시작되었습니다.`);
-
-// Rooms for HTTP signaling API
-const rooms_http = {}; // roomCode -> { hostIp, port, createdAt }
 
 const rooms = {}; // roomCode -> Set of WebSocket clients
 
