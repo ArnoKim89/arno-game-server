@@ -87,6 +87,7 @@ setInterval(cleanupRooms, 30 * 1000).unref?.();
 const server = http.createServer(async (req, res) => {
     try {
         const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+        const ip = getClientIp(req);
 
         // Health check
         if (req.method === 'GET' && url.pathname === '/') {
@@ -112,13 +113,13 @@ const server = http.createServer(async (req, res) => {
         // POST /room/join    { roomCode }                -> { ok, roomCode, hostIp, port }
         // -----------------------------------------------------------------
         if (req.method === 'POST' && (url.pathname === '/room/create' || url.pathname === '/room/join')) {
-            const ip = getClientIp(req);
             const raw = await readBody(req);
             let body = {};
             try { body = raw ? JSON.parse(raw) : {}; } catch { body = {}; }
 
             const roomCode = normalizeRoomCode(body.roomCode);
             if (!isValidRoomCode(roomCode)) {
+                console.log(`[HTTP] ${ip} ${req.method} ${url.pathname} -> invalid_room_code (${String(body.roomCode || '').slice(0, 32)})`);
                 json(res, 400, { ok: false, error: 'invalid_room_code' });
                 return;
             }
@@ -132,6 +133,7 @@ const server = http.createServer(async (req, res) => {
                 if (existing) {
                     const providedKey = typeof body.hostKey === 'string' ? body.hostKey : '';
                     if (!providedKey || providedKey !== existing.hostKey) {
+                        console.log(`[HTTP] ${ip} POST /room/create room=${roomCode} -> room_code_taken`);
                         json(res, 409, { ok: false, error: 'room_code_taken' });
                         return;
                     }
@@ -140,6 +142,7 @@ const server = http.createServer(async (req, res) => {
                 const hostKey = existing?.hostKey || Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
                 const expiresAt = Date.now() + ROOM_TTL_MS;
                 httpRooms.set(roomCode, { hostIp: ip, port: p, hostKey, expiresAt });
+                console.log(`[HTTP] ${ip} POST /room/create room=${roomCode} port=${p} -> ok`);
 
                 json(res, 200, { ok: true, roomCode, hostIp: ip, port: p, hostKey, expiresInMs: ROOM_TTL_MS });
                 return;
@@ -149,10 +152,12 @@ const server = http.createServer(async (req, res) => {
             const room = httpRooms.get(roomCode);
             if (!room || room.expiresAt <= Date.now()) {
                 httpRooms.delete(roomCode);
+                console.log(`[HTTP] ${ip} POST /room/join room=${roomCode} -> room_not_found`);
                 json(res, 404, { ok: false, error: 'room_not_found' });
                 return;
             }
 
+            console.log(`[HTTP] ${ip} POST /room/join room=${roomCode} -> ok hostIp=${room.hostIp} port=${room.port}`);
             json(res, 200, { ok: true, roomCode, hostIp: room.hostIp, port: room.port });
             return;
         }
@@ -165,18 +170,19 @@ const server = http.createServer(async (req, res) => {
         // data: { sdp } or { candidate, sdpMid, sdpMLineIndex }
         // -----------------------------------------------------------------
         if (req.method === 'POST' && url.pathname === '/rtc/push') {
-            const ip = getClientIp(req);
             const raw = await readBody(req);
             let body = {};
             try { body = raw ? JSON.parse(raw) : {}; } catch { body = {}; }
 
             const roomCode = normalizeRoomCode(body.roomCode);
             if (!isValidRoomCode(roomCode)) {
+                console.log(`[HTTP] ${ip} POST /rtc/push -> invalid_room_code`);
                 json(res, 400, { ok: false, error: 'invalid_room_code' });
                 return;
             }
             const type = typeof body.type === 'string' ? body.type : '';
             if (!['offer', 'answer', 'ice'].includes(type)) {
+                console.log(`[HTTP] ${ip} POST /rtc/push room=${roomCode} -> invalid_type(${type})`);
                 json(res, 400, { ok: false, error: 'invalid_type' });
                 return;
             }
@@ -185,6 +191,7 @@ const server = http.createServer(async (req, res) => {
             const data = typeof body.data === 'object' && body.data ? body.data : {};
 
             const seq = pushRtcEvent(roomCode, { kind: 'rtc', type, from, to, ip, data });
+            console.log(`[HTTP] ${ip} POST /rtc/push room=${roomCode} type=${type} from=${from} to=${to || '*'} -> seq=${seq}`);
             json(res, 200, { ok: true, seq });
             return;
         }
@@ -192,6 +199,7 @@ const server = http.createServer(async (req, res) => {
         if (req.method === 'GET' && url.pathname === '/rtc/poll') {
             const roomCode = normalizeRoomCode(url.searchParams.get('roomCode') || '');
             if (!isValidRoomCode(roomCode)) {
+                console.log(`[HTTP] ${ip} GET /rtc/poll -> invalid_room_code`);
                 json(res, 400, { ok: false, error: 'invalid_room_code' });
                 return;
             }
@@ -200,6 +208,9 @@ const server = http.createServer(async (req, res) => {
 
             const r = getRtcRoom(roomCode);
             const events = r.events.filter((e) => e.seq > since && (!to || !e.to || e.to === to));
+            if (events.length > 0) {
+                console.log(`[HTTP] ${ip} GET /rtc/poll room=${roomCode} since=${since} to=${to || '*'} -> ${events.length} event(s), now=${r.seq}`);
+            }
             json(res, 200, { ok: true, now: r.seq, events });
             return;
         }
